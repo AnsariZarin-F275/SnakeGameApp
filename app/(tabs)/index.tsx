@@ -1,13 +1,26 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
-import { LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  Animated,
+  Easing,
+  LayoutChangeEvent,
+  Pressable,
+  StyleProp,
+  StyleSheet,
+  Text,
+  View,
+  ViewStyle,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
-const SEGMENT_SIZE = 18;
+const SEGMENT_SIZE = 12;
 const INITIAL_SNAKE_LENGTH = 4;
-const GAME_SPEED_MS = 200;
+const GAME_SPEED_MS = 240;
+const MIN_FOOD_DISTANCE_FROM_HEAD = 4;
 
 type Position = { x: number; y: number };
 type Direction = 'left' | 'right' | 'up' | 'down';
@@ -42,14 +55,33 @@ function getRandomFoodPosition(
   snake: Position[]
 ): Position {
   const occupied = new Set(snake.map((segment) => `${segment.x},${segment.y}`));
+  const head = snake[0];
 
+  function isFarEnoughFromHead(position: Position): boolean {
+    if (!head) {
+      return true;
+    }
+    const distance = Math.abs(position.x - head.x) + Math.abs(position.y - head.y);
+    return distance >= MIN_FOOD_DISTANCE_FROM_HEAD;
+  }
+
+  // Bounded so this can never loop forever, even if the snake nearly
+  // fills the grid. If we run out of attempts, we fall back to any
+  // free cell (same behavior as before this change).
+  const maxAttempts = gridCols * gridRows;
+  let attempts = 0;
   let position: Position;
+
   do {
     position = {
       x: Math.floor(Math.random() * gridCols),
       y: Math.floor(Math.random() * gridRows),
     };
-  } while (occupied.has(`${position.x},${position.y}`));
+    attempts += 1;
+  } while (
+    attempts < maxAttempts &&
+    (occupied.has(`${position.x},${position.y}`) || !isFarEnoughFromHead(position))
+  );
 
   return position;
 }
@@ -77,6 +109,96 @@ function isSelfCollision(newHead: Position, snake: Position[]): boolean {
   );
 }
 
+function hexToRgb(hex: string): [number, number, number] {
+  const parsed = hex.replace('#', '');
+  const value = parseInt(parsed, 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function interpolateColor(fromHex: string, toHex: string, factor: number): string {
+  const [r1, g1, b1] = hexToRgb(fromHex);
+  const [r2, g2, b2] = hexToRgb(toHex);
+  const r = Math.round(r1 + (r2 - r1) * factor);
+  const g = Math.round(g1 + (g2 - g1) * factor);
+  const b = Math.round(b1 + (b2 - b1) * factor);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function getBodySegmentColor(index: number, total: number): string {
+  const factor = total <= 1 ? 0 : index / (total - 1);
+  return interpolateColor('#4ade80', '#15803d', factor);
+}
+
+function getDirectionAngle(direction: Direction): string {
+  switch (direction) {
+    case 'right':
+      return '0deg';
+    case 'down':
+      return '90deg';
+    case 'left':
+      return '180deg';
+    case 'up':
+      return '270deg';
+    default:
+      return '0deg';
+  }
+}
+
+const HIGH_SCORE_STORAGE_KEY = '@snake_game:high_score';
+
+async function loadHighScore(): Promise<number> {
+  try {
+    const stored = await AsyncStorage.getItem(HIGH_SCORE_STORAGE_KEY);
+    return stored ? parseInt(stored, 10) : 0;
+  } catch (error) {
+    console.warn('Failed to load high score:', error);
+    return 0;
+  }
+}
+
+async function saveHighScore(value: number): Promise<void> {
+  try {
+    await AsyncStorage.setItem(HIGH_SCORE_STORAGE_KEY, value.toString());
+  } catch (error) {
+    console.warn('Failed to save high score:', error);
+  }
+}
+
+type AnimatedButtonProps = {
+  onPress: () => void;
+  disabled?: boolean;
+  style?: StyleProp<ViewStyle>;
+  children: ReactNode;
+};
+
+function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonProps) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  const handlePressIn = () => {
+    Animated.spring(scale, {
+      toValue: 0.94,
+      useNativeDriver: true,
+      speed: 40,
+      bounciness: 0,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  };
+
+  return (
+    <Pressable onPress={onPress} onPressIn={handlePressIn} onPressOut={handlePressOut} disabled={disabled}>
+      <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
+    </Pressable>
+  );
+}
+
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -85,6 +207,7 @@ export default function HomeScreen() {
   const [food, setFood] = useState<Position | null>(null);
   const [direction, setDirection] = useState<Direction>('right');
   const [score, setScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isGameOver, setIsGameOver] = useState(false);
   const [gameAreaWidth, setGameAreaWidth] = useState(0);
@@ -95,6 +218,9 @@ export default function HomeScreen() {
   const directionRef = useRef<Direction>(direction);
   const gridColsRef = useRef(0);
   const gridRowsRef = useRef(0);
+  const scoreRef = useRef(score);
+  const segmentAnimsRef = useRef<Animated.ValueXY[]>([]);
+  const foodScale = useRef(new Animated.Value(0)).current;
 
   const gridCols = Math.floor(gameAreaWidth / SEGMENT_SIZE);
   const gridRows = Math.floor(gameAreaHeight / SEGMENT_SIZE);
@@ -103,6 +229,7 @@ export default function HomeScreen() {
   directionRef.current = direction;
   gridColsRef.current = gridCols;
   gridRowsRef.current = gridRows;
+  scoreRef.current = score;
 
   const handleStartGame = () => {
     if (snake.length === 0 || food === null || gridCols === 0 || gridRows === 0) {
@@ -130,6 +257,12 @@ export default function HomeScreen() {
   const handleGameOver = () => {
     setIsPlaying(false);
     setIsGameOver(true);
+
+    const finalScore = scoreRef.current;
+    if (finalScore > highScore) {
+      setHighScore(finalScore);
+      saveHighScore(finalScore);
+    }
   };
 
   const handleGameAreaLayout = (event: LayoutChangeEvent) => {
@@ -161,6 +294,49 @@ export default function HomeScreen() {
     directionRef.current = newDirection;
     setDirection(newDirection);
   }
+
+  useEffect(() => {
+    loadHighScore().then(setHighScore);
+  }, []);
+
+  // Animates each segment's visual position smoothly whenever the snake
+  // state changes. This only watches state from the outside — it never
+  // touches the game loop, collision checks, or movement math below.
+  useEffect(() => {
+    const anims = segmentAnimsRef.current;
+
+    while (anims.length < snake.length) {
+      const segment = snake[anims.length];
+      anims.push(
+        new Animated.ValueXY({ x: segment.x * SEGMENT_SIZE, y: segment.y * SEGMENT_SIZE })
+      );
+    }
+    if (anims.length > snake.length) {
+      anims.length = snake.length;
+    }
+
+    snake.forEach((segment, index) => {
+      Animated.timing(anims[index], {
+        toValue: { x: segment.x * SEGMENT_SIZE, y: segment.y * SEGMENT_SIZE },
+        duration: GAME_SPEED_MS,
+        easing: Easing.linear,
+        useNativeDriver: false,
+      }).start();
+    });
+  }, [snake]);
+
+  // Plays a small "pop" animation whenever a new food position appears.
+  useEffect(() => {
+    if (!food) {
+      return;
+    }
+    foodScale.setValue(0.3);
+    Animated.spring(foodScale, {
+      toValue: 1,
+      friction: 4,
+      useNativeDriver: true,
+    }).start();
+  }, [food, foodScale]);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -219,13 +395,19 @@ export default function HomeScreen() {
   }, [isPlaying]);
 
   return (
-    <SafeAreaView
-      style={[styles.container, { backgroundColor: isDark ? '#0f1419' : '#f4f7f5' }]}>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
+    <LinearGradient
+      colors={isDark ? ['#0f1419', '#1a2420', '#0f1419'] : ['#f4f7f5', '#e8f0ea', '#f4f7f5']}
+      style={styles.container}>
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style={isDark ? 'light' : 'dark'} />
 
-      <View style={styles.content}>
+        <View style={styles.content}>
         <Text style={[styles.title, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
           Snake Game
+        </Text>
+
+        <Text style={[styles.bestScoreText, { color: isDark ? '#9ca89f' : '#5c6b5f' }]}>
+          Best Score: {highScore}
         </Text>
 
         <View
@@ -254,31 +436,62 @@ export default function HomeScreen() {
           ]}
           onLayout={handleGameAreaLayout}>
           {food && (
-            <View
+            <Animated.View
               style={[
                 styles.food,
                 {
                   left: food.x * SEGMENT_SIZE,
                   top: food.y * SEGMENT_SIZE,
+                  transform: [{ scale: foodScale }],
                 },
-              ]}
-            />
+              ]}>
+              <View style={styles.appleLeaf} />
+              <View style={styles.appleStem} />
+              <View style={styles.appleBody}>
+                <View style={styles.appleShine} />
+              </View>
+            </Animated.View>
           )}
 
-          {snake.map((segment, index) => (
-            <View
-              key={`${segment.x}-${segment.y}-${index}`}
-              style={[
-                styles.segment,
-                {
-                  left: segment.x * SEGMENT_SIZE,
-                  top: segment.y * SEGMENT_SIZE,
-                },
-                index === 0 && styles.headSegment,
-                index === snake.length - 1 && styles.tailSegment,
-              ]}
-            />
-          ))}
+          {snake.map((segment, index) => {
+            const anim = segmentAnimsRef.current[index];
+            if (!anim) {
+              return null;
+            }
+
+            const isHead = index === 0;
+            const isTail = index === snake.length - 1 && snake.length > 1;
+            const backgroundColor = isHead
+              ? '#4ade80'
+              : isTail
+                ? '#15803d'
+                : getBodySegmentColor(index, snake.length);
+
+            return (
+              <Animated.View
+                key={index}
+                style={[
+                  styles.segment,
+                  {
+                    left: anim.x,
+                    top: anim.y,
+                    backgroundColor,
+                  },
+                  isHead && [
+                    styles.headSegment,
+                    { transform: [{ rotate: getDirectionAngle(direction) }] },
+                  ],
+                  isTail && styles.tailSegment,
+                ]}>
+                {isHead && (
+                  <>
+                    <View style={[styles.eye, styles.eyeTop]} />
+                    <View style={[styles.eye, styles.eyeBottom]} />
+                  </>
+                )}
+              </Animated.View>
+            );
+          })}
 
           {isGameOver && (
             <View style={styles.gameOverOverlay}>
@@ -294,89 +507,85 @@ export default function HomeScreen() {
 
         <View style={styles.controls}>
           <View style={styles.controlRow}>
-            <Pressable
-              style={({ pressed }) => [
+            <AnimatedButton
+              style={[
                 styles.controlButton,
                 {
                   backgroundColor: isDark ? '#1a2420' : '#ffffff',
                   borderColor: isDark ? '#2d3b32' : '#d4e4d8',
                 },
-                pressed && styles.controlButtonPressed,
               ]}
               onPress={moveUp}>
               <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Up
               </Text>
-            </Pressable>
+            </AnimatedButton>
 
-            <Pressable
-              style={({ pressed }) => [
+            <AnimatedButton
+              style={[
                 styles.controlButton,
                 {
                   backgroundColor: isDark ? '#1a2420' : '#ffffff',
                   borderColor: isDark ? '#2d3b32' : '#d4e4d8',
                 },
-                pressed && styles.controlButtonPressed,
               ]}
               onPress={moveDown}>
               <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Down
               </Text>
-            </Pressable>
+            </AnimatedButton>
           </View>
 
           <View style={styles.controlRow}>
-            <Pressable
-              style={({ pressed }) => [
+            <AnimatedButton
+              style={[
                 styles.controlButton,
                 {
                   backgroundColor: isDark ? '#1a2420' : '#ffffff',
                   borderColor: isDark ? '#2d3b32' : '#d4e4d8',
                 },
-                pressed && styles.controlButtonPressed,
               ]}
               onPress={moveLeft}>
               <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Left
               </Text>
-            </Pressable>
+            </AnimatedButton>
 
-            <Pressable
-              style={({ pressed }) => [
+            <AnimatedButton
+              style={[
                 styles.controlButton,
                 {
                   backgroundColor: isDark ? '#1a2420' : '#ffffff',
                   borderColor: isDark ? '#2d3b32' : '#d4e4d8',
                 },
-                pressed && styles.controlButtonPressed,
               ]}
               onPress={moveRight}>
               <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Right
               </Text>
-            </Pressable>
+            </AnimatedButton>
           </View>
         </View>
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.startButton,
-            isPlaying && styles.startButtonDisabled,
-            pressed && !isPlaying && styles.startButtonPressed,
-          ]}
+        <AnimatedButton
+          style={[styles.startButton, isPlaying && styles.startButtonDisabled]}
           onPress={isGameOver ? handleRestartGame : handleStartGame}
           disabled={isPlaying}>
           <Text style={styles.startButtonText}>
             {isPlaying ? 'Playing...' : isGameOver ? 'Restart Game' : 'Start Game'}
           </Text>
-        </Pressable>
-      </View>
-    </SafeAreaView>
-  );  
+        </AnimatedButton>
+        </View>
+      </SafeAreaView>
+    </LinearGradient>
+  );
 }
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+  },
+  safeArea: {
     flex: 1,
   },
   content: {
@@ -389,6 +598,11 @@ const styles = StyleSheet.create({
     fontSize: 40,
     fontWeight: '700',
     letterSpacing: -0.5,
+    textAlign: 'center',
+  },
+  bestScoreText: {
+    fontSize: 14,
+    fontWeight: '600',
     textAlign: 'center',
   },
   scoreCard: {
@@ -417,7 +631,7 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRadius: 16,
     borderWidth: 1,
-    minHeight: 160,
+    minHeight: 280,
     position: 'relative',
     overflow: 'hidden',
   },
@@ -425,22 +639,73 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: SEGMENT_SIZE,
     height: SEGMENT_SIZE,
-    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appleBody: {
+    width: SEGMENT_SIZE,
+    height: SEGMENT_SIZE,
     borderRadius: SEGMENT_SIZE / 2,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appleShine: {
+    position: 'absolute',
+    top: 2,
+    left: 2,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: 'rgba(255, 255, 255, 0.6)',
+  },
+  appleStem: {
+    position: 'absolute',
+    top: -2,
+    width: 2,
+    height: 3,
+    borderRadius: 1,
+    backgroundColor: '#78350f',
+    zIndex: 1,
+  },
+  appleLeaf: {
+    position: 'absolute',
+    top: -3,
+    left: SEGMENT_SIZE / 2,
+    width: 5,
+    height: 3,
+    borderRadius: 3,
+    backgroundColor: '#22c55e',
+    transform: [{ rotate: '30deg' }],
+    zIndex: 1,
   },
   segment: {
     position: 'absolute',
     width: SEGMENT_SIZE,
     height: SEGMENT_SIZE,
     backgroundColor: '#22c55e',
+    borderRadius: 3,
   },
   headSegment: {
-    backgroundColor: '#4ade80',
-    borderRadius: 4,
+    borderRadius: SEGMENT_SIZE / 2,
+  },
+  eye: {
+    position: 'absolute',
+    width: 2,
+    height: 2,
+    borderRadius: 1,
+    right: 2,
+    backgroundColor: '#0f1419',
+  },
+  eyeTop: {
+    top: 2,
+  },
+  eyeBottom: {
+    bottom: 2,
   },
   tailSegment: {
-    borderTopLeftRadius: 4,
-    borderBottomLeftRadius: 4,
+    borderRadius: SEGMENT_SIZE / 2,
+    transform: [{ scale: 0.7 }],
   },
   gameOverOverlay: {
     position: 'absolute',
@@ -478,10 +743,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
   },
-  controlButtonPressed: {
-    opacity: 0.7,
-    transform: [{ scale: 0.98 }],
-  },
   controlButtonText: {
     fontSize: 15,
     fontWeight: '600',
@@ -504,10 +765,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#86efac',
     shadowOpacity: 0,
     elevation: 0,
-  },
-  startButtonPressed: {
-    backgroundColor: '#16a34a',
-    transform: [{ scale: 0.98 }],
   },
   startButtonText: {
     color: '#ffffff',
