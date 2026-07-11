@@ -15,7 +15,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -163,12 +163,20 @@ function getDirectionAngle(direction: Direction): string {
   }
 }
 
-// Derives sizes from the current window so the UI text/score card scale
-// sensibly, and — separately — so the game board itself gets sized
+// Derives sizes from the *usable* screen area (window size minus safe-area
+// insets — status bar, notch, gesture/nav bar) so the UI text/score card
+// scale sensibly, and — separately — so the game board itself gets sized
 // appropriately for the platform it's running on. This only computes
 // numbers; it doesn't change what's on screen or the order things appear in.
-function getResponsiveMetrics(windowWidth: number, windowHeight: number) {
-  const isLargeScreen = windowWidth >= 700;
+//
+// Important: callers must pass the USABLE width/height (after subtracting
+// safe-area insets), not the raw Dimensions.get('window') value. On Android
+// with edge-to-edge enabled, the raw window size includes the area behind
+// the status bar and navigation bar, which isn't actually available content
+// space — using it directly would make the board oversized and inconsistent
+// across devices.
+function getResponsiveMetrics(usableWidth: number, usableHeight: number) {
+  const isLargeScreen = usableWidth >= 700;
   const isDesktopWeb = Platform.OS === 'web' && isLargeScreen;
 
   let boardWidth: number | null = null;
@@ -179,16 +187,18 @@ function getResponsiveMetrics(windowWidth: number, windowHeight: number) {
     // of reusing the phone-sized column, and keep a consistent aspect
     // ratio rather than stretching edge-to-edge. The 900 caps just guard
     // against the board becoming absurd on very large monitors — the
-    // primary sizing is still a ratio of the real window dimensions.
+    // primary sizing is still a ratio of the real usable dimensions.
     const aspectRatio = 4 / 5; // width : height — a little taller than wide
-    const availableWidth = Math.min(windowWidth * 0.6, 900);
-    const availableHeight = Math.min(windowHeight * 0.8, 900);
+    const availableWidth = Math.min(usableWidth * 0.6, 900);
+    const availableHeight = Math.min(usableHeight * 0.8, 900);
     boardWidth = Math.min(availableWidth, availableHeight * aspectRatio);
     boardHeight = boardWidth / aspectRatio;
   } else {
     // Phones/tablets: board fills available vertical space, width fills
-    // its column — same behavior as the working Android sizing fix.
-    boardHeight = Math.max(280, windowHeight * 0.5);
+    // its column. Based on usable height, so this is now consistent
+    // between web and native instead of Android being inflated by the
+    // status bar/nav bar area.
+    boardHeight = Math.max(280, usableHeight * 0.5);
   }
 
   return {
@@ -271,6 +281,7 @@ function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonPr
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const insets = useSafeAreaInsets();
 
   const [snake, setSnake] = useState<Position[]>([]);
   const [food, setFood] = useState<Position | null>(null);
@@ -294,7 +305,13 @@ export default function HomeScreen() {
 
   const gridCols = Math.floor(gameAreaWidth / SEGMENT_SIZE);
   const gridRows = Math.floor(gameAreaHeight / SEGMENT_SIZE);
-  const responsiveMetrics = getResponsiveMetrics(windowSize.width, windowSize.height);
+  // Subtract safe-area insets (status bar, notch, gesture/nav bar) so the
+  // sizing math works from the actual usable screen area — not the raw
+  // window size, which on Android (edge-to-edge enabled) also includes
+  // the space behind the system bars.
+  const usableWidth = Math.max(0, windowSize.width - insets.left - insets.right);
+  const usableHeight = Math.max(0, windowSize.height - insets.top - insets.bottom);
+  const responsiveMetrics = getResponsiveMetrics(usableWidth, usableHeight);
 
   foodRef.current = food;
   directionRef.current = direction;
