@@ -4,8 +4,10 @@ import { StatusBar } from 'expo-status-bar';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  Dimensions,
   Easing,
   LayoutChangeEvent,
+  Platform,
   Pressable,
   StyleProp,
   StyleSheet,
@@ -17,9 +19,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
-const SEGMENT_SIZE = 18;
+const SEGMENT_SIZE = 12;
 const INITIAL_SNAKE_LENGTH = 4;
 const GAME_SPEED_MS = 240;
+const MIN_FOOD_DISTANCE_FROM_HEAD = 4;
 
 type Position = { x: number; y: number };
 type Direction = 'left' | 'right' | 'up' | 'down';
@@ -54,16 +57,52 @@ function getRandomFoodPosition(
   snake: Position[]
 ): Position {
   const occupied = new Set(snake.map((segment) => `${segment.x},${segment.y}`));
+  const head = snake[0];
 
-  let position: Position;
-  do {
-    position = {
+  function isFarEnoughFromHead(position: Position): boolean {
+    if (!head) {
+      return true;
+    }
+    const distance = Math.abs(position.x - head.x) + Math.abs(position.y - head.y);
+    return distance >= MIN_FOOD_DISTANCE_FROM_HEAD;
+  }
+
+  function isValidPosition(position: Position): boolean {
+    return !occupied.has(`${position.x},${position.y}`) && isFarEnoughFromHead(position);
+  }
+
+  // Try random cells first — fast, and covers almost every real game state.
+  const maxRandomAttempts = gridCols * gridRows;
+  for (let attempt = 0; attempt < maxRandomAttempts; attempt += 1) {
+    const candidate: Position = {
       x: Math.floor(Math.random() * gridCols),
       y: Math.floor(Math.random() * gridRows),
     };
-  } while (occupied.has(`${position.x},${position.y}`));
+    if (isValidPosition(candidate)) {
+      return candidate;
+    }
+  }
 
-  return position;
+  // Rare fallback (the snake nearly fills the board): scan every cell and
+  // pick any cell the snake does NOT occupy. This only relaxes the
+  // "not too close to the head" preference — it never returns a cell
+  // that overlaps the snake's body.
+  const freeCells: Position[] = [];
+  for (let y = 0; y < gridRows; y += 1) {
+    for (let x = 0; x < gridCols; x += 1) {
+      if (!occupied.has(`${x},${y}`)) {
+        freeCells.push({ x, y });
+      }
+    }
+  }
+
+  if (freeCells.length > 0) {
+    return freeCells[Math.floor(Math.random() * freeCells.length)];
+  }
+
+  // The snake fills the entire board — there is nowhere left to place
+  // food. This can't practically happen before a collision ends the game.
+  return head ?? { x: 0, y: 0 };
 }
 
 function wrapHorizontal(x: number, gridCols: number): number {
@@ -124,6 +163,44 @@ function getDirectionAngle(direction: Direction): string {
   }
 }
 
+// Derives sizes from the current window so the UI text/score card scale
+// sensibly, and — separately — so the game board itself gets sized
+// appropriately for the platform it's running on. This only computes
+// numbers; it doesn't change what's on screen or the order things appear in.
+function getResponsiveMetrics(windowWidth: number, windowHeight: number) {
+  const isLargeScreen = windowWidth >= 700;
+  const isDesktopWeb = Platform.OS === 'web' && isLargeScreen;
+
+  let boardWidth: number | null = null;
+  let boardHeight: number;
+
+  if (isDesktopWeb) {
+    // Web/desktop: size the board from the actual browser window instead
+    // of reusing the phone-sized column, and keep a consistent aspect
+    // ratio rather than stretching edge-to-edge. The 900 caps just guard
+    // against the board becoming absurd on very large monitors — the
+    // primary sizing is still a ratio of the real window dimensions.
+    const aspectRatio = 4 / 5; // width : height — a little taller than wide
+    const availableWidth = Math.min(windowWidth * 0.6, 900);
+    const availableHeight = Math.min(windowHeight * 0.8, 900);
+    boardWidth = Math.min(availableWidth, availableHeight * aspectRatio);
+    boardHeight = boardWidth / aspectRatio;
+  } else {
+    // Phones/tablets: board fills available vertical space, width fills
+    // its column — same behavior as the working Android sizing fix.
+    boardHeight = Math.max(280, windowHeight * 0.5);
+  }
+
+  return {
+    isDesktopWeb,
+    titleFontSize: isLargeScreen ? 40 : 30,
+    scorePaddingVertical: isLargeScreen ? 24 : 12,
+    scoreValueFontSize: isLargeScreen ? 48 : 32,
+    boardWidth,
+    boardHeight,
+  };
+}
+
 const HIGH_SCORE_STORAGE_KEY = '@snake_game:high_score';
 
 async function loadHighScore(): Promise<number> {
@@ -172,9 +249,21 @@ function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonPr
     }).start();
   };
 
+  // Flattening the style here (instead of handing Animated.View a
+  // nested array of styles) avoids an Android-only bug where Text
+  // rendered inside a natively-driven Animated.View can fail to paint.
+  // `collapsable={false}` reinforces this by telling Android's view
+  // flattening optimizer not to strip this view out from under the
+  // animation.
+  const flattenedStyle = StyleSheet.flatten(style);
+
   return (
     <Pressable onPress={onPress} onPressIn={handlePressIn} onPressOut={handlePressOut} disabled={disabled}>
-      <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
+      <Animated.View
+        collapsable={false}
+        style={[flattenedStyle, { transform: [{ scale }] }]}>
+        {children}
+      </Animated.View>
     </Pressable>
   );
 }
@@ -192,6 +281,7 @@ export default function HomeScreen() {
   const [isGameOver, setIsGameOver] = useState(false);
   const [gameAreaWidth, setGameAreaWidth] = useState(0);
   const [gameAreaHeight, setGameAreaHeight] = useState(0);
+  const [windowSize, setWindowSize] = useState(() => Dimensions.get('window'));
 
   const hasInitialized = useRef(false);
   const foodRef = useRef<Position | null>(null);
@@ -204,6 +294,7 @@ export default function HomeScreen() {
 
   const gridCols = Math.floor(gameAreaWidth / SEGMENT_SIZE);
   const gridRows = Math.floor(gameAreaHeight / SEGMENT_SIZE);
+  const responsiveMetrics = getResponsiveMetrics(windowSize.width, windowSize.height);
 
   foodRef.current = food;
   directionRef.current = direction;
@@ -277,6 +368,16 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadHighScore().then(setHighScore);
+  }, []);
+
+  // Keeps responsive sizing correct if the device rotates or (on web)
+  // the browser window is resized. Purely visual — does not touch any
+  // game state.
+  useEffect(() => {
+    const subscription = Dimensions.addEventListener('change', ({ window }) => {
+      setWindowSize(window);
+    });
+    return () => subscription.remove();
   }, []);
 
   // Animates each segment's visual position smoothly whenever the snake
@@ -382,7 +483,11 @@ export default function HomeScreen() {
         <StatusBar style={isDark ? 'light' : 'dark'} />
 
         <View style={styles.content}>
-        <Text style={[styles.title, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
+        <Text
+          style={[
+            styles.title,
+            { color: isDark ? '#ffffff' : '#1a2e1a', fontSize: responsiveMetrics.titleFontSize },
+          ]}>
           Snake Game
         </Text>
 
@@ -396,12 +501,17 @@ export default function HomeScreen() {
             {
               backgroundColor: isDark ? '#1a2420' : '#ffffff',
               borderColor: isDark ? '#2d3b32' : '#e0ebe3',
+              paddingVertical: responsiveMetrics.scorePaddingVertical,
             },
           ]}>
           <Text style={[styles.scoreLabel, { color: isDark ? '#9ca89f' : '#5c6b5f' }]}>
             Current Score
           </Text>
-          <Text style={[styles.scoreValue, { color: isDark ? '#4ade80' : '#16a34a' }]}>
+          <Text
+            style={[
+              styles.scoreValue,
+              { color: isDark ? '#4ade80' : '#16a34a', fontSize: responsiveMetrics.scoreValueFontSize },
+            ]}>
             {score}
           </Text>
         </View>
@@ -413,6 +523,14 @@ export default function HomeScreen() {
               backgroundColor: isDark ? '#141c17' : '#e8f0ea',
               borderColor: isDark ? '#243028' : '#d4e4d8',
             },
+            responsiveMetrics.isDesktopWeb
+              ? {
+                  flex: 0,
+                  width: responsiveMetrics.boardWidth ?? undefined,
+                  height: responsiveMetrics.boardHeight,
+                  alignSelf: 'center',
+                }
+              : { minHeight: responsiveMetrics.boardHeight },
           ]}
           onLayout={handleGameAreaLayout}>
           {food && (
@@ -496,7 +614,7 @@ export default function HomeScreen() {
                 },
               ]}
               onPress={moveUp}>
-              <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
+              <Text numberOfLines={1} style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Up
               </Text>
             </AnimatedButton>
@@ -510,7 +628,7 @@ export default function HomeScreen() {
                 },
               ]}
               onPress={moveDown}>
-              <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
+              <Text numberOfLines={1} style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Down
               </Text>
             </AnimatedButton>
@@ -526,7 +644,7 @@ export default function HomeScreen() {
                 },
               ]}
               onPress={moveLeft}>
-              <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
+              <Text numberOfLines={1} style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Left
               </Text>
             </AnimatedButton>
@@ -540,7 +658,7 @@ export default function HomeScreen() {
                 },
               ]}
               onPress={moveRight}>
-              <Text style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
+              <Text numberOfLines={1} style={[styles.controlButtonText, { color: isDark ? '#ffffff' : '#1a2e1a' }]}>
                 Move Right
               </Text>
             </AnimatedButton>
@@ -611,7 +729,7 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRadius: 16,
     borderWidth: 1,
-    minHeight: 160,
+    minHeight: 280,
     position: 'relative',
     overflow: 'hidden',
   },
@@ -632,29 +750,29 @@ const styles = StyleSheet.create({
   },
   appleShine: {
     position: 'absolute',
-    top: 3,
-    left: 3,
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+    top: 2,
+    left: 2,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
     backgroundColor: 'rgba(255, 255, 255, 0.6)',
   },
   appleStem: {
     position: 'absolute',
-    top: -3,
-    width: 3,
-    height: 5,
-    borderRadius: 1.5,
+    top: -2,
+    width: 2,
+    height: 3,
+    borderRadius: 1,
     backgroundColor: '#78350f',
     zIndex: 1,
   },
   appleLeaf: {
     position: 'absolute',
-    top: -4,
+    top: -3,
     left: SEGMENT_SIZE / 2,
-    width: 7,
-    height: 5,
-    borderRadius: 4,
+    width: 5,
+    height: 3,
+    borderRadius: 3,
     backgroundColor: '#22c55e',
     transform: [{ rotate: '30deg' }],
     zIndex: 1,
@@ -671,17 +789,17 @@ const styles = StyleSheet.create({
   },
   eye: {
     position: 'absolute',
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-    right: 3,
+    width: 2,
+    height: 2,
+    borderRadius: 1,
+    right: 2,
     backgroundColor: '#0f1419',
   },
   eyeTop: {
-    top: 4,
+    top: 2,
   },
   eyeBottom: {
-    bottom: 4,
+    bottom: 2,
   },
   tailSegment: {
     borderRadius: SEGMENT_SIZE / 2,
