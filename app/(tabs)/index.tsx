@@ -17,10 +17,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
-const SEGMENT_SIZE = 12;
+const SEGMENT_SIZE = 18;
 const INITIAL_SNAKE_LENGTH = 4;
 const GAME_SPEED_MS = 240;
-const MIN_FOOD_DISTANCE_FROM_HEAD = 4;
 
 type Position = { x: number; y: number };
 type Direction = 'left' | 'right' | 'up' | 'down';
@@ -55,33 +54,14 @@ function getRandomFoodPosition(
   snake: Position[]
 ): Position {
   const occupied = new Set(snake.map((segment) => `${segment.x},${segment.y}`));
-  const head = snake[0];
 
-  function isFarEnoughFromHead(position: Position): boolean {
-    if (!head) {
-      return true;
-    }
-    const distance = Math.abs(position.x - head.x) + Math.abs(position.y - head.y);
-    return distance >= MIN_FOOD_DISTANCE_FROM_HEAD;
-  }
-
-  // Bounded so this can never loop forever, even if the snake nearly
-  // fills the grid. If we run out of attempts, we fall back to any
-  // free cell (same behavior as before this change).
-  const maxAttempts = gridCols * gridRows;
-  let attempts = 0;
   let position: Position;
-
   do {
     position = {
       x: Math.floor(Math.random() * gridCols),
       y: Math.floor(Math.random() * gridRows),
     };
-    attempts += 1;
-  } while (
-    attempts < maxAttempts &&
-    (occupied.has(`${position.x},${position.y}`) || !isFarEnoughFromHead(position))
-  );
+  } while (occupied.has(`${position.x},${position.y}`));
 
   return position;
 }
@@ -631,7 +611,7 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRadius: 16,
     borderWidth: 1,
-    minHeight: 280,
+    minHeight: 160,
     position: 'relative',
     overflow: 'hidden',
   },
@@ -652,29 +632,29 @@ const styles = StyleSheet.create({
   },
   appleShine: {
     position: 'absolute',
-    top: 2,
-    left: 2,
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
+    top: 3,
+    left: 3,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
     backgroundColor: 'rgba(255, 255, 255, 0.6)',
   },
   appleStem: {
     position: 'absolute',
-    top: -2,
-    width: 2,
-    height: 3,
-    borderRadius: 1,
+    top: -3,
+    width: 3,
+    height: 5,
+    borderRadius: 1.5,
     backgroundColor: '#78350f',
     zIndex: 1,
   },
   appleLeaf: {
     position: 'absolute',
-    top: -3,
+    top: -4,
     left: SEGMENT_SIZE / 2,
-    width: 5,
-    height: 3,
-    borderRadius: 3,
+    width: 7,
+    height: 5,
+    borderRadius: 4,
     backgroundColor: '#22c55e',
     transform: [{ rotate: '30deg' }],
     zIndex: 1,
@@ -691,17 +671,17 @@ const styles = StyleSheet.create({
   },
   eye: {
     position: 'absolute',
-    width: 2,
-    height: 2,
-    borderRadius: 1,
-    right: 2,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    right: 3,
     backgroundColor: '#0f1419',
   },
   eyeTop: {
-    top: 2,
+    top: 4,
   },
   eyeBottom: {
-    bottom: 2,
+    bottom: 4,
   },
   tailSegment: {
     borderRadius: SEGMENT_SIZE / 2,
