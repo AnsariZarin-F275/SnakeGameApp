@@ -1,3 +1,4 @@
+  import MaterialIcons from '@expo/vector-icons/MaterialIcons';
   import { Tabs } from 'expo-router';
   import React from 'react';
 
@@ -26,8 +27,8 @@
         <Tabs.Screen
           name="explore"
           options={{
-            title: 'Explore',
-            tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
+            title: 'About',
+            tabBarIcon: ({ color }) => <MaterialIcons size={28} name="info-outline" color={color} />,
           }}
         />
       </Tabs>
