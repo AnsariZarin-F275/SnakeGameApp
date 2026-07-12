@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { ReactNode, useEffect, useRef, useState } from 'react';
@@ -173,14 +174,31 @@ function getDirectionAngle(direction: Direction): string {
 // safe-area insets), not the raw Dimensions.get('window') value. On Android
 // with edge-to-edge enabled, the raw window size includes the area behind
 // the status bar and navigation bar, which isn't actually available content
-// space — using it directly would make the board oversized and inconsistent
-// across devices.
+// space.
+//
+// Native (phone/tablet) board sizing is intentionally NOT computed from
+// window/Dimensions math. This screen is one tab inside an Expo Router
+// `Tabs` navigator (see app/(tabs)/_layout.tsx) — the navigator already
+// reserves space for the bottom tab bar before our screen is even laid
+// out, and neither `Dimensions` nor `useSafeAreaInsets` know that space
+// was taken (a tab bar isn't an OS safe-area inset, it's our own app's
+// navigation chrome). Any height we calculate from window size can end up
+// larger than what's truly left, and forcing that as `minHeight` makes
+// the flex column overflow the real screen (the board looks too tall and
+// the buttons get pushed toward/past the bottom edge). `flex: 1` on the
+// board's container already fills whatever space its real parent has —
+// Yoga measures that directly from the actual view tree, so it is
+// automatically correct regardless of tab bars, insets, or platform.
+// We only keep a small fixed floor for pathological cases (e.g. a very
+// short landscape window), not a computed one.
+const MIN_NATIVE_BOARD_HEIGHT = 280;
+
 function getResponsiveMetrics(usableWidth: number, usableHeight: number) {
   const isLargeScreen = usableWidth >= 700;
   const isDesktopWeb = Platform.OS === 'web' && isLargeScreen;
 
   let boardWidth: number | null = null;
-  let boardHeight: number;
+  let boardHeight: number | null = null;
 
   if (isDesktopWeb) {
     // Web/desktop: size the board from the actual browser window instead
@@ -188,18 +206,18 @@ function getResponsiveMetrics(usableWidth: number, usableHeight: number) {
     // ratio rather than stretching edge-to-edge. The 900 caps just guard
     // against the board becoming absurd on very large monitors — the
     // primary sizing is still a ratio of the real usable dimensions.
+    // (Desktop web isn't nested under a tab bar the same way native is,
+    // and this is an explicit bounded box, not a "fill what's left"
+    // calculation, so it isn't affected by the tab-bar issue above.)
     const aspectRatio = 4 / 5; // width : height — a little taller than wide
     const availableWidth = Math.min(usableWidth * 0.6, 900);
     const availableHeight = Math.min(usableHeight * 0.8, 900);
     boardWidth = Math.min(availableWidth, availableHeight * aspectRatio);
     boardHeight = boardWidth / aspectRatio;
-  } else {
-    // Phones/tablets: board fills available vertical space, width fills
-    // its column. Based on usable height, so this is now consistent
-    // between web and native instead of Android being inflated by the
-    // status bar/nav bar area.
-    boardHeight = Math.max(280, usableHeight * 0.5);
   }
+  // Native: boardHeight stays null — the board's own `flex: 1` +
+  // MIN_NATIVE_BOARD_HEIGHT floor (applied directly in the base
+  // stylesheet) handle sizing correctly with no window math involved.
 
   return {
     isDesktopWeb,
@@ -236,9 +254,22 @@ type AnimatedButtonProps = {
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
   children: ReactNode;
+  onLayout?: (event: LayoutChangeEvent) => void;
 };
 
-function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonProps) {
+type LayoutDebug = {
+  windowHeight?: number;
+  insetsTop?: number;
+  insetsBottom?: number;
+  usableHeight?: number;
+  rootHeight?: number;
+  contentHeight?: number;
+  gameAreaHeight?: number;
+  controlsHeight?: number;
+  startButtonHeight?: number;
+};
+
+function AnimatedButton({ onPress, disabled, style, children, onLayout }: AnimatedButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
@@ -271,6 +302,7 @@ function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonPr
     <Pressable onPress={onPress} onPressIn={handlePressIn} onPressOut={handlePressOut} disabled={disabled}>
       <Animated.View
         collapsable={false}
+        onLayout={onLayout}
         style={[flattenedStyle, { transform: [{ scale }] }]}>
         {children}
       </Animated.View>
@@ -282,6 +314,7 @@ export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
 
   const [snake, setSnake] = useState<Position[]>([]);
   const [food, setFood] = useState<Position | null>(null);
@@ -293,6 +326,7 @@ export default function HomeScreen() {
   const [gameAreaWidth, setGameAreaWidth] = useState(0);
   const [gameAreaHeight, setGameAreaHeight] = useState(0);
   const [windowSize, setWindowSize] = useState(() => Dimensions.get('window'));
+  const [layoutDebug, setLayoutDebug] = useState<LayoutDebug>({});
 
   const hasInitialized = useRef(false);
   const foodRef = useRef<Position | null>(null);
@@ -312,6 +346,85 @@ export default function HomeScreen() {
   const usableWidth = Math.max(0, windowSize.width - insets.left - insets.right);
   const usableHeight = Math.max(0, windowSize.height - insets.top - insets.bottom);
   const responsiveMetrics = getResponsiveMetrics(usableWidth, usableHeight);
+
+  // ---- TEMPORARY DEBUG INSTRUMENTATION — remove after diagnosis ----
+  // Collects the latest known measurement for each container so we can
+  // print a running summary every time any one of them updates, and
+  // compare the numbers between Android and Web.
+  const layoutDebugRef = useRef<LayoutDebug>({});
+
+  const updateLayoutDebug = (nextValues: Partial<LayoutDebug>) => {
+    layoutDebugRef.current = { ...layoutDebugRef.current, ...nextValues };
+    setLayoutDebug((current) => {
+      const next = { ...current, ...nextValues };
+      return Object.keys(next).every(
+        (key) => next[key as keyof LayoutDebug] === current[key as keyof LayoutDebug]
+      )
+        ? current
+        : next;
+    });
+  };
+
+  function logLayoutDebug(label: string) {
+    const d = layoutDebugRef.current;
+    const remainingFreeSpace =
+      d.contentHeight !== undefined
+        ? d.contentHeight -
+          (d.gameAreaHeight ?? 0) -
+          (d.controlsHeight ?? 0) -
+          (d.startButtonHeight ?? 0)
+        : undefined;
+
+    console.log(`[LayoutDebug/${Platform.OS}] (${label})`, {
+      windowHeight: d.windowHeight,
+      insetsTop: d.insetsTop,
+      insetsBottom: d.insetsBottom,
+      usableHeight: d.usableHeight,
+      contentHeight: d.contentHeight,
+      gameAreaHeight: d.gameAreaHeight,
+      controlsHeight: d.controlsHeight,
+      startButtonHeight: d.startButtonHeight,
+      remainingFreeSpace,
+    });
+  }
+
+  // Logs window size + safe-area insets any time they change.
+  useEffect(() => {
+    layoutDebugRef.current.windowHeight = windowSize.height;
+    layoutDebugRef.current.insetsTop = insets.top;
+    layoutDebugRef.current.insetsBottom = insets.bottom;
+    layoutDebugRef.current.usableHeight = usableHeight;
+    logLayoutDebug('window/insets changed');
+  }, [windowSize.height, insets.top, insets.bottom, usableHeight]);
+
+  const handleRootLayout = (event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout;
+    updateLayoutDebug({ rootHeight: height });
+    console.log(`[LayoutDebug/${Platform.OS}] root onLayout`, event.nativeEvent.layout);
+    logLayoutDebug('root measured');
+  };
+
+  const handleContentLayout = (event: LayoutChangeEvent) => {
+    const { layout } = event.nativeEvent;
+    console.log(`[LayoutDebug/${Platform.OS}] content onLayout`, layout);
+    updateLayoutDebug({ contentHeight: layout.height });
+    logLayoutDebug('content measured');
+  };
+
+  const handleControlsLayout = (event: LayoutChangeEvent) => {
+    const { layout } = event.nativeEvent;
+    console.log(`[LayoutDebug/${Platform.OS}] controls onLayout`, layout);
+    updateLayoutDebug({ controlsHeight: layout.height });
+    logLayoutDebug('controls measured');
+  };
+
+  const handleStartButtonLayout = (event: LayoutChangeEvent) => {
+    const { layout } = event.nativeEvent;
+    console.log(`[LayoutDebug/${Platform.OS}] start button onLayout`, layout);
+    updateLayoutDebug({ startButtonHeight: layout.height });
+    logLayoutDebug('start button measured');
+  };
+  // ---- END TEMPORARY DEBUG INSTRUMENTATION ----
 
   foodRef.current = food;
   directionRef.current = direction;
@@ -357,6 +470,12 @@ export default function HomeScreen() {
     const { width, height } = event.nativeEvent.layout;
     setGameAreaWidth(width);
     setGameAreaHeight(height);
+
+    // TEMPORARY DEBUG INSTRUMENTATION — remove after diagnosis.
+    console.log(`[LayoutDebug/${Platform.OS}] gameArea onLayout`, event.nativeEvent.layout);
+    updateLayoutDebug({ gameAreaHeight: height });
+    logLayoutDebug('gameArea measured');
+    // ---- END TEMPORARY DEBUG INSTRUMENTATION ----
 
     const cols = Math.floor(width / SEGMENT_SIZE);
     const rows = Math.floor(height / SEGMENT_SIZE);
@@ -495,11 +614,17 @@ export default function HomeScreen() {
   return (
     <LinearGradient
       colors={isDark ? ['#0f1419', '#1a2420', '#0f1419'] : ['#f4f7f5', '#e8f0ea', '#f4f7f5']}
-      style={styles.container}>
+      style={styles.container}
+      onLayout={handleRootLayout}>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style={isDark ? 'light' : 'dark'} />
 
-        <View style={styles.content}>
+        <View
+          style={[
+            styles.content,
+            Platform.OS === 'android' && { paddingBottom: 16 + tabBarHeight },
+          ]}
+          onLayout={handleContentLayout}>
         <Text
           style={[
             styles.title,
@@ -544,10 +669,10 @@ export default function HomeScreen() {
               ? {
                   flex: 0,
                   width: responsiveMetrics.boardWidth ?? undefined,
-                  height: responsiveMetrics.boardHeight,
+                  height: responsiveMetrics.boardHeight ?? undefined,
                   alignSelf: 'center',
                 }
-              : { minHeight: responsiveMetrics.boardHeight },
+              : null,
           ]}
           onLayout={handleGameAreaLayout}>
           {food && (
@@ -620,7 +745,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        <View style={styles.controls}>
+        <View style={styles.controls} onLayout={handleControlsLayout}>
           <View style={styles.controlRow}>
             <AnimatedButton
               style={[
@@ -685,6 +810,7 @@ export default function HomeScreen() {
         <AnimatedButton
           style={[styles.startButton, isPlaying && styles.startButtonDisabled]}
           onPress={isGameOver ? handleRestartGame : handleStartGame}
+          onLayout={handleStartButtonLayout}
           disabled={isPlaying}>
           <Text style={styles.startButtonText}>
             {isPlaying ? 'Playing...' : isGameOver ? 'Restart Game' : 'Start Game'}
@@ -692,6 +818,25 @@ export default function HomeScreen() {
         </AnimatedButton>
         </View>
       </SafeAreaView>
+      <View pointerEvents="none" style={styles.debugOverlay}>
+        <Text style={styles.debugTitle}>Layout debug ({Platform.OS})</Text>
+        <Text style={styles.debugText}>Window: {Math.round(windowSize.width)} × {Math.round(windowSize.height)}</Text>
+        <Text style={styles.debugText}>Insets: T {insets.top}  R {insets.right}  B {insets.bottom}  L {insets.left}</Text>
+        <Text style={styles.debugText}>Root height: {Math.round(layoutDebug.rootHeight ?? 0)}</Text>
+        <Text style={styles.debugText}>Content height: {Math.round(layoutDebug.contentHeight ?? 0)}</Text>
+        <Text style={styles.debugText}>Game area height: {Math.round(layoutDebug.gameAreaHeight ?? 0)}</Text>
+        <Text style={styles.debugText}>Controls height: {Math.round(layoutDebug.controlsHeight ?? 0)}</Text>
+        <Text style={styles.debugText}>Button height: {Math.round(layoutDebug.startButtonHeight ?? 0)}</Text>
+        <Text style={styles.debugText}>Grid: {gridCols} × {gridRows}</Text>
+        <Text style={styles.debugText}>
+          Remaining free space: {Math.round(
+            (layoutDebug.contentHeight ?? 0) -
+              (layoutDebug.gameAreaHeight ?? 0) -
+              (layoutDebug.controlsHeight ?? 0) -
+              (layoutDebug.startButtonHeight ?? 0)
+          )}
+        </Text>
+      </View>
     </LinearGradient>
   );
 }
@@ -699,6 +844,28 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  debugOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 100,
+    maxWidth: '94%',
+    padding: 8,
+    borderRadius: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.78)',
+  },
+  debugTitle: {
+    color: '#86efac',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 3,
+  },
+  debugText: {
+    color: '#ffffff',
+    fontSize: 11,
+    lineHeight: 15,
+    fontVariant: ['tabular-nums'],
   },
   safeArea: {
     flex: 1,
@@ -746,7 +913,7 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRadius: 16,
     borderWidth: 1,
-    minHeight: 280,
+    minHeight: MIN_NATIVE_BOARD_HEIGHT,
     position: 'relative',
     overflow: 'hidden',
   },
