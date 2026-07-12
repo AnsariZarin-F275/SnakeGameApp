@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -33,7 +33,7 @@ export default function AboutScreen() {
     <LinearGradient colors={[colors.background, colors.middle, colors.background]} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style={isDark ? 'light' : 'dark'} />
-        <View style={styles.content}>
+        <ScrollView contentContainerStyle={styles.content}>
           <Text style={[styles.title, { color: colors.title }]}>About</Text>
 
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -56,7 +56,7 @@ export default function AboutScreen() {
             <Text style={[styles.control, { color: colors.text }]}>• Avoid colliding with yourself.</Text>
             <Text style={[styles.control, { color: colors.text }]}>• Try to beat your highest score.</Text>
           </View>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -70,7 +70,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    flex: 1,
+    flexGrow: 1,
     width: '100%',
     maxWidth: 640,
     alignSelf: 'center',

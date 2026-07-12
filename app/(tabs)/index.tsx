@@ -256,6 +256,8 @@ type AnimatedButtonProps = {
   children: ReactNode;
 };
 
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
@@ -277,16 +279,15 @@ function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonPr
     }).start();
   };
 
-  const flattenedStyle = StyleSheet.flatten(style);
-
   return (
-    <Pressable onPress={onPress} onPressIn={handlePressIn} onPressOut={handlePressOut} disabled={disabled}>
-      <Animated.View
-        collapsable={false}
-        style={[flattenedStyle, { transform: [{ scale }] }]}>
-        {children}
-      </Animated.View>
-    </Pressable>
+    <AnimatedPressable
+      onPress={onPress}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      disabled={disabled}
+      style={[style, { transform: [{ scale }] }]}>
+      {children}
+    </AnimatedPressable>
   );
 }
 
