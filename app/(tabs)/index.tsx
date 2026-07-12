@@ -254,28 +254,15 @@ type AnimatedButtonProps = {
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
   children: ReactNode;
-  onLayout?: (event: LayoutChangeEvent) => void;
 };
 
-type LayoutDebug = {
-  windowHeight?: number;
-  insetsTop?: number;
-  insetsBottom?: number;
-  usableHeight?: number;
-  rootHeight?: number;
-  contentHeight?: number;
-  gameAreaHeight?: number;
-  controlsHeight?: number;
-  startButtonHeight?: number;
-};
-
-function AnimatedButton({ onPress, disabled, style, children, onLayout }: AnimatedButtonProps) {
+function AnimatedButton({ onPress, disabled, style, children }: AnimatedButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
     Animated.spring(scale, {
       toValue: 0.94,
-      useNativeDriver: true,
+      useNativeDriver: false,
       speed: 40,
       bounciness: 0,
     }).start();
@@ -284,25 +271,18 @@ function AnimatedButton({ onPress, disabled, style, children, onLayout }: Animat
   const handlePressOut = () => {
     Animated.spring(scale, {
       toValue: 1,
-      useNativeDriver: true,
+      useNativeDriver: false,
       speed: 20,
       bounciness: 6,
     }).start();
   };
 
-  // Flattening the style here (instead of handing Animated.View a
-  // nested array of styles) avoids an Android-only bug where Text
-  // rendered inside a natively-driven Animated.View can fail to paint.
-  // `collapsable={false}` reinforces this by telling Android's view
-  // flattening optimizer not to strip this view out from under the
-  // animation.
   const flattenedStyle = StyleSheet.flatten(style);
 
   return (
     <Pressable onPress={onPress} onPressIn={handlePressIn} onPressOut={handlePressOut} disabled={disabled}>
       <Animated.View
         collapsable={false}
-        onLayout={onLayout}
         style={[flattenedStyle, { transform: [{ scale }] }]}>
         {children}
       </Animated.View>
@@ -326,7 +306,6 @@ export default function HomeScreen() {
   const [gameAreaWidth, setGameAreaWidth] = useState(0);
   const [gameAreaHeight, setGameAreaHeight] = useState(0);
   const [windowSize, setWindowSize] = useState(() => Dimensions.get('window'));
-  const [layoutDebug, setLayoutDebug] = useState<LayoutDebug>({});
 
   const hasInitialized = useRef(false);
   const foodRef = useRef<Position | null>(null);
@@ -346,85 +325,6 @@ export default function HomeScreen() {
   const usableWidth = Math.max(0, windowSize.width - insets.left - insets.right);
   const usableHeight = Math.max(0, windowSize.height - insets.top - insets.bottom);
   const responsiveMetrics = getResponsiveMetrics(usableWidth, usableHeight);
-
-  // ---- TEMPORARY DEBUG INSTRUMENTATION — remove after diagnosis ----
-  // Collects the latest known measurement for each container so we can
-  // print a running summary every time any one of them updates, and
-  // compare the numbers between Android and Web.
-  const layoutDebugRef = useRef<LayoutDebug>({});
-
-  const updateLayoutDebug = (nextValues: Partial<LayoutDebug>) => {
-    layoutDebugRef.current = { ...layoutDebugRef.current, ...nextValues };
-    setLayoutDebug((current) => {
-      const next = { ...current, ...nextValues };
-      return Object.keys(next).every(
-        (key) => next[key as keyof LayoutDebug] === current[key as keyof LayoutDebug]
-      )
-        ? current
-        : next;
-    });
-  };
-
-  function logLayoutDebug(label: string) {
-    const d = layoutDebugRef.current;
-    const remainingFreeSpace =
-      d.contentHeight !== undefined
-        ? d.contentHeight -
-          (d.gameAreaHeight ?? 0) -
-          (d.controlsHeight ?? 0) -
-          (d.startButtonHeight ?? 0)
-        : undefined;
-
-    console.log(`[LayoutDebug/${Platform.OS}] (${label})`, {
-      windowHeight: d.windowHeight,
-      insetsTop: d.insetsTop,
-      insetsBottom: d.insetsBottom,
-      usableHeight: d.usableHeight,
-      contentHeight: d.contentHeight,
-      gameAreaHeight: d.gameAreaHeight,
-      controlsHeight: d.controlsHeight,
-      startButtonHeight: d.startButtonHeight,
-      remainingFreeSpace,
-    });
-  }
-
-  // Logs window size + safe-area insets any time they change.
-  useEffect(() => {
-    layoutDebugRef.current.windowHeight = windowSize.height;
-    layoutDebugRef.current.insetsTop = insets.top;
-    layoutDebugRef.current.insetsBottom = insets.bottom;
-    layoutDebugRef.current.usableHeight = usableHeight;
-    logLayoutDebug('window/insets changed');
-  }, [windowSize.height, insets.top, insets.bottom, usableHeight]);
-
-  const handleRootLayout = (event: LayoutChangeEvent) => {
-    const { height } = event.nativeEvent.layout;
-    updateLayoutDebug({ rootHeight: height });
-    console.log(`[LayoutDebug/${Platform.OS}] root onLayout`, event.nativeEvent.layout);
-    logLayoutDebug('root measured');
-  };
-
-  const handleContentLayout = (event: LayoutChangeEvent) => {
-    const { layout } = event.nativeEvent;
-    console.log(`[LayoutDebug/${Platform.OS}] content onLayout`, layout);
-    updateLayoutDebug({ contentHeight: layout.height });
-    logLayoutDebug('content measured');
-  };
-
-  const handleControlsLayout = (event: LayoutChangeEvent) => {
-    const { layout } = event.nativeEvent;
-    console.log(`[LayoutDebug/${Platform.OS}] controls onLayout`, layout);
-    updateLayoutDebug({ controlsHeight: layout.height });
-    logLayoutDebug('controls measured');
-  };
-
-  const handleStartButtonLayout = (event: LayoutChangeEvent) => {
-    const { layout } = event.nativeEvent;
-    console.log(`[LayoutDebug/${Platform.OS}] start button onLayout`, layout);
-    updateLayoutDebug({ startButtonHeight: layout.height });
-    logLayoutDebug('start button measured');
-  };
-  // ---- END TEMPORARY DEBUG INSTRUMENTATION ----
 
   foodRef.current = food;
   directionRef.current = direction;
@@ -470,12 +370,6 @@ export default function HomeScreen() {
     const { width, height } = event.nativeEvent.layout;
     setGameAreaWidth(width);
     setGameAreaHeight(height);
-
-    // TEMPORARY DEBUG INSTRUMENTATION — remove after diagnosis.
-    console.log(`[LayoutDebug/${Platform.OS}] gameArea onLayout`, event.nativeEvent.layout);
-    updateLayoutDebug({ gameAreaHeight: height });
-    logLayoutDebug('gameArea measured');
-    // ---- END TEMPORARY DEBUG INSTRUMENTATION ----
 
     const cols = Math.floor(width / SEGMENT_SIZE);
     const rows = Math.floor(height / SEGMENT_SIZE);
@@ -614,8 +508,7 @@ export default function HomeScreen() {
   return (
     <LinearGradient
       colors={isDark ? ['#0f1419', '#1a2420', '#0f1419'] : ['#f4f7f5', '#e8f0ea', '#f4f7f5']}
-      style={styles.container}
-      onLayout={handleRootLayout}>
+      style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style={isDark ? 'light' : 'dark'} />
 
@@ -623,8 +516,7 @@ export default function HomeScreen() {
           style={[
             styles.content,
             Platform.OS === 'android' && { paddingBottom: 16 + tabBarHeight },
-          ]}
-          onLayout={handleContentLayout}>
+          ]}>
         <Text
           style={[
             styles.title,
@@ -745,7 +637,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        <View style={styles.controls} onLayout={handleControlsLayout}>
+        <View style={styles.controls}>
           <View style={styles.controlRow}>
             <AnimatedButton
               style={[
@@ -810,7 +702,6 @@ export default function HomeScreen() {
         <AnimatedButton
           style={[styles.startButton, isPlaying && styles.startButtonDisabled]}
           onPress={isGameOver ? handleRestartGame : handleStartGame}
-          onLayout={handleStartButtonLayout}
           disabled={isPlaying}>
           <Text style={styles.startButtonText}>
             {isPlaying ? 'Playing...' : isGameOver ? 'Restart Game' : 'Start Game'}
@@ -818,25 +709,6 @@ export default function HomeScreen() {
         </AnimatedButton>
         </View>
       </SafeAreaView>
-      <View pointerEvents="none" style={styles.debugOverlay}>
-        <Text style={styles.debugTitle}>Layout debug ({Platform.OS})</Text>
-        <Text style={styles.debugText}>Window: {Math.round(windowSize.width)} × {Math.round(windowSize.height)}</Text>
-        <Text style={styles.debugText}>Insets: T {insets.top}  R {insets.right}  B {insets.bottom}  L {insets.left}</Text>
-        <Text style={styles.debugText}>Root height: {Math.round(layoutDebug.rootHeight ?? 0)}</Text>
-        <Text style={styles.debugText}>Content height: {Math.round(layoutDebug.contentHeight ?? 0)}</Text>
-        <Text style={styles.debugText}>Game area height: {Math.round(layoutDebug.gameAreaHeight ?? 0)}</Text>
-        <Text style={styles.debugText}>Controls height: {Math.round(layoutDebug.controlsHeight ?? 0)}</Text>
-        <Text style={styles.debugText}>Button height: {Math.round(layoutDebug.startButtonHeight ?? 0)}</Text>
-        <Text style={styles.debugText}>Grid: {gridCols} × {gridRows}</Text>
-        <Text style={styles.debugText}>
-          Remaining free space: {Math.round(
-            (layoutDebug.contentHeight ?? 0) -
-              (layoutDebug.gameAreaHeight ?? 0) -
-              (layoutDebug.controlsHeight ?? 0) -
-              (layoutDebug.startButtonHeight ?? 0)
-          )}
-        </Text>
-      </View>
     </LinearGradient>
   );
 }
@@ -844,28 +716,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  debugOverlay: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    zIndex: 100,
-    maxWidth: '94%',
-    padding: 8,
-    borderRadius: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.78)',
-  },
-  debugTitle: {
-    color: '#86efac',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 3,
-  },
-  debugText: {
-    color: '#ffffff',
-    fontSize: 11,
-    lineHeight: 15,
-    fontVariant: ['tabular-nums'],
   },
   safeArea: {
     flex: 1,
