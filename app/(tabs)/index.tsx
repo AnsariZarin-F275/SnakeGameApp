@@ -1,5 +1,4 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { ReactNode, useEffect, useRef, useState } from 'react';
@@ -295,7 +294,6 @@ export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const insets = useSafeAreaInsets();
-  const tabBarHeight = useBottomTabBarHeight();
 
   const [snake, setSnake] = useState<Position[]>([]);
   const [food, setFood] = useState<Position | null>(null);
@@ -513,11 +511,7 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style={isDark ? 'light' : 'dark'} />
 
-        <View
-          style={[
-            styles.content,
-            Platform.OS === 'android' && { paddingBottom: 16 + tabBarHeight },
-          ]}>
+        <View style={styles.content}>
         <Text
           style={[
             styles.title,
